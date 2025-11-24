@@ -38,7 +38,7 @@ def get_sentence_embedding(sentence, tokenizer, model):
     return last_hidden[:, 0, :].squeeze(0)
 
 @analysis.post("/make-score", tags=["Monotony Score"])
-async def calculate_similarity(req: SentenceRequest):
+async def calculate_monotony(req: SentenceRequest):
 
     sentences = req.sentences
 
