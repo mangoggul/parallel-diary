@@ -78,3 +78,4 @@ async def calculate_similarity(req: SentenceRequest):
         "sentence_count": n,
         "average_similarity": avg_similarity * 100
     }
+
