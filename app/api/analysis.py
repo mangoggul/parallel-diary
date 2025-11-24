@@ -12,13 +12,10 @@ model.eval()
 
 analysis = APIRouter(prefix="/analysis")
 
-@analysis.get("/", tags = ["analysis"])
-async def root_analysis():
-    return {"Hello": "Analysis"}
 
-@analysis.get("/monotony_score", tags=["monotony score"])
+@analysis.get("/get-score", tags=["Monotony Score"])
 async def get_monotony(user_id: int):
-    return {"user_id": user_id, "monotony_score": monotony_score}
+    return {"user_id": user_id, "monotony_score": 70}
 
 class SentenceRequest(BaseModel) :
     sentences: List[str]
@@ -40,7 +37,7 @@ def get_sentence_embedding(sentence, tokenizer, model):
 
     return last_hidden[:, 0, :].squeeze(0)
 
-@analysis.post("/similarity", tags=["sentence similarity"])
+@analysis.post("/make-score", tags=["Monotony Score"])
 async def calculate_similarity(req: SentenceRequest):
 
     sentences = req.sentences
