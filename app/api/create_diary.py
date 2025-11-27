@@ -27,7 +27,6 @@ class DiaryRequest(BaseModel):
 
 # AI가 반드시 반환해야 할 JSON 구조를 정의 (Pydantic)
 class DiaryResponseContent(BaseModel):
-    diary_id: str = Field(description="일기 고유 ID (예: d_20251124_001)")
     content: str = Field(description="사용자의 대화 내용을 요약하여 '~다' 형식으로 작성된 일기 본문")
 
 
