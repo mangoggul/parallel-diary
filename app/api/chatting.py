@@ -2,32 +2,62 @@ from fastapi import APIRouter, HTTPException
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 from typing import List, Dict, Generator, Any
+import json
+import os
+from dotenv import load_dotenv
 
 from openai import OpenAI
-from dotenv import load_dotenv
-import os
 
 # ----------------------
-# 1. Upstage API 로딩 및 클라이언트 초기화
+# 1. 환경 설정 및 클라이언트 초기화
 # ----------------------
 load_dotenv()
 # 환경 변수에서 API 키와 기본 URL을 로드합니다.
-client = OpenAI(
-    api_key=os.getenv('API_KEY'),
-    base_url=os.getenv("API_BASE_URL", "https://api.upstage.ai/v1")
-)
+# API_BASE_URL 환경 변수가 설정되지 않은 경우 기본값으로 Upstage API를 사용합니다.
+try:
+    client = OpenAI(
+        api_key=os.getenv('API_KEY'),
+        base_url=os.getenv("API_BASE_URL", "https://api.upstage.ai/v1")
+    )
+except Exception as e:
+    # 클라이언트 초기화 오류 시 로그를 남기고 None으로 설정
+    print(f"Warning: Failed to initialize OpenAI client: {e}")
+    client = None
 
-chat_history_router = APIRouter(prefix="/chat-history")
+# ------------------------------------------------------------------
+# 라우터 정의
+# ------------------------------------------------------------------
+chat_history_router = APIRouter(prefix="/chat")
 
 # --------------------------------
 # 2. 요청 Body 모델 정의: 대화 기록 유지의 핵심
 # --------------------------------
 class ChatRequest(BaseModel):
-    # 이 리스트에 이전 대화 내용이 모두 담겨서 API로 전송됩니다.
+    """
+    대화 기록 전체를 담는 요청 모델.
+    messages 리스트는 AI와의 문맥을 유지하는 데 사용됩니다.
+    """
     messages: List[Dict[str, str]] = Field(
         ...,
-        description="**[대화 기록 유지의 핵심]** 이전 대화와 현재 사용자 메시지를 포함하는 메시지 리스트입니다. (예: [{'role': 'user', 'content': '...'}, {'role': 'assistant', 'content': '...'}])"
+        description="**[대화 기록 유지의 핵심]** 이전 대화와 현재 사용자 메시지를 포함하는 메시지 리스트입니다. (role: 'user' 또는 'assistant', content: '대화 내용')"
     )
+
+    # Swagger UI에 표시될 예시를 커스터마이징하여 프론트엔드 개발자가 이해하기 쉽도록 합니다.
+    model_config = {
+        "json_schema_extra": {
+            "examples": [
+                {
+                    "messages": [
+                        {"role": "assistant", "content": "오늘 일상은 어떠셨나요?"},
+                        {"role": "user", "content": "오늘 점심은 초밥 먹었어."},
+                        {"role": "assistant", "content": "초밥 맛있으셨겠어요. 또 무슨 일을 하셨나요?"},
+                        {"role": "user", "content": "AI 가 개발자 일자리 다 없앨 거 같애서 러다이트 운동을 일으켰어"}
+                    ]
+                }
+            ]
+        }
+    }
+
 
 # --------------------------------
 # 3. 스트리밍 응답을 위한 제너레이터 함수
@@ -38,21 +68,26 @@ def stream_response_generator(messages: List[Dict[str, str]]) -> Generator[str, 
     제공된 messages 리스트(대화 기록 포함)를 AI에 전달하고, 
     응답을 SSE 형식의 문자열로 스트리밍하는 제너레이터 함수입니다.
     """
+    if client is None:
+        raise Exception("API Client is not initialized.")
+
     try:
-        # 💡 시스템 프롬프트: 항상 대화의 첫 부분에 위치하여 AI의 역할을 정의합니다.
-        system_prompt = {
-            "role": "system",
-            "content": "너는 사용자의 하루 일과가 궁금한 친절한 AI 비서야. 사용자에게 하루 일과를 계속 질문해줘. 이전 대화 내용을 참고하여 문맥에 맞는 대답을 딱 하나만 해."
-        }
-        
-        # 메시지 리스트의 첫 요소가 'system'이 아니거나 비어있으면 시스템 프롬프트를 추가합니다.
-        if not messages or messages[0].get("role") != "system":
-            all_messages = [system_prompt] + messages
-        else:
-            all_messages = messages
+        # 💡 시스템 프롬프트: AI의 역할을 정의합니다.
+        # 기존 코드를 개선하여, system prompt가 messages 리스트에 포함되지 않았을 경우에만 추가합니다.
+        system_prompt_content = (
+            "너는 사용자의 하루 일과를 시간 순서대로 추적하는 친절한 AI 비서이다. "
+            "답변에 이모지나 마크업(예: **굵게**, *기울임*)을 절대 사용하지 않으며, "
+            "이전 대화 내용을 참고하여 **간단한 공감이나 반응을 먼저 표현한 후**, 다음 행동이나 사건에 대한 질문을 하나만 제공하여 대화를 이어간다."
+        )
+        # messages 리스트를 복사하여 수정할 수 있도록 준비
+        all_messages = messages[:] 
+
+        # messages 리스트의 첫 요소가 'system'이 아니거나 리스트가 비어있으면 시스템 프롬프트를 맨 앞에 추가합니다.
+        if not all_messages or all_messages[0].get("role") != "system":
+            system_prompt = {"role": "system", "content": system_prompt_content}
+            all_messages.insert(0, system_prompt)
 
         # Solar-Pro2에게 요청 보내기 (stream=True)
-        # all_messages 리스트 전체가 AI에게 전달되어 문맥이 유지됩니다.
         stream = client.chat.completions.create(
             model="solar-pro2",
             messages=all_messages,
@@ -67,40 +102,27 @@ def stream_response_generator(messages: List[Dict[str, str]]) -> Generator[str, 
                 yield f"data: {content}\n\n"
 
     except Exception as e:
-        # 오류 발생 시 클라이언트에게 오류 메시지를 전송
-        error_message = f"AI 처리 중 오류 발생: {e}"
+        # 오류 발생 시 클라이언트에게 오류 메시지를 전송하고 서버 로그에 기록
+        error_message = f"AI 처리 중 오류 발생: {type(e).__name__} - {str(e)}"
+        print(error_message) # 서버 로그에 오류 출력
         yield f"data: [ERROR] {error_message}\n\n"
-        # API 오류가 발생하면 HTTP 500 예외를 발생시켜 로그를 남깁니다.
-        raise HTTPException(status_code=500, detail=error_message)
+        # 스트리밍 함수 내부에서 HTTPException을 직접 발생시키기보다, 
+        # 에러 메시지를 클라이언트에 전달하고 함수를 종료하는 것이 스트리밍의 일반적인 처리 방식입니다.
 
 
 # --------------------------------
 # 4. API 엔드포인트 정의
 # --------------------------------
-@chat_history_router.post("/stream-chat-with-history", tags=["Chat History"], response_class=StreamingResponse)
+@chat_history_router.post("/chat-sse", tags=["SSE Chat"], response_class=StreamingResponse)
 async def stream_chat_with_history(req: ChatRequest):
     """
     대화 기록(messages)을 받아 AI 비서의 응답을 실시간으로 스트리밍합니다 (SSE).
     """
+    if client is None:
+        raise HTTPException(status_code=503, detail="AI Service is unavailable. Check API initialization.")
+
     return StreamingResponse(
         stream_response_generator(req.messages),
         media_type="text/event-stream"
     )
 
-# --------------------------------
-# 5. 사용 예시
-# --------------------------------
-# 이 라우터를 FastAPI 앱에 등록하여 사용하세요:
-#
-# from fastapi import FastAPI
-# app = FastAPI()
-# app.include_router(chat_history_router)
-#
-# 요청 예시 (두 번째 대화):
-# {
-#   "messages": [
-#     {"role": "user", "content": "오늘 점심은 뭐 먹었는지 기억해 줄래?"},
-#     {"role": "assistant", "content": "저는 AI라서 식사를 하지 않아요. 사용자님은 점심으로 무엇을 드셨나요?"},
-#     {"role": "user", "content": "저는 샌드위치를 먹었는데 별로 맛이 없었어요."}
-#   ]
-# }

@@ -8,8 +8,7 @@ from api.create_diary import create_diary
 from api.diary_keyword import diary_keyword
 from api.create_parallel_diary import create_parallel_diary
 from api.chatting import chat_history_router
-
-
+from api.recommendation import diary_recommend
 
 app = FastAPI()
 
@@ -40,6 +39,8 @@ app.include_router(create_parallel_diary)
 app.include_router(diary_keyword)
 
 app.include_router(chat_history_router)
+
+app.include_router(diary_recommend)
 
 @app.get("/")
 def read_root():

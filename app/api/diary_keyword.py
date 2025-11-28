@@ -25,7 +25,7 @@ except Exception as e:
     client = None
 
 # 라우터 정의
-extract_keywords = APIRouter(prefix="/keywords")
+diary_keyword = APIRouter(prefix="/keywords")
 
 
 # ================================
@@ -43,7 +43,7 @@ class KeywordResponse(BaseModel):
 # ================================
 # 2) 키워드 추출 API (Solar-Pro2)
 # ================================
-@diary_keyword.post("/extract", tags=["Diary"], response_model=KeywordResponse)
+@diary_keyword.post("/extract", tags=["Keywords"], response_model=KeywordResponse)
 async def extract_keywords_api(req: KeywordRequest):
     if not client:
         raise HTTPException(status_code=503, detail="API Client is not initialized. Check API Key.")
