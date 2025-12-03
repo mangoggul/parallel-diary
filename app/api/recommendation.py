@@ -35,7 +35,6 @@ class RecommendRequest(BaseModel):
     """
     일기 내용과 단조로움 지수(monotony_score)를 받아 추천을 생성하는 요청 모델입니다.
     """
-    user_id: int = Field(description="사용자 ID (로그 목적으로 포함)")
     content: str = Field(description="일기나 긴 텍스트 내용")
     monotony_score: int = Field(description="단조로움 지수 (%)")
 
@@ -44,7 +43,6 @@ class RecommendRequest(BaseModel):
         "json_schema_extra": {
             "examples": [
                 {
-                    "user_id": 101,
                     "content": "오늘은 정말 오랜만에 새로운 취미인 목공을 시작했다. 서툰 솜씨지만 작은 나무 수납함을 만들었다. 내일은 회사에 휴가를 내고 동네 맛집 투어를 계획 중이다.",
                     "monotony_score": 80
                 }
