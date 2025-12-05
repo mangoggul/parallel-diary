@@ -29,23 +29,21 @@ except Exception as e:
     client = None
 
 # ================================
-# 1) 요청 모델 정의 (기존 유지)
+# 1) 요청 모델 정의 (original_diary_id 제거)
 # ================================
 class IntegratedRecommendRequest(BaseModel):
     """
-    일기 내용, 단조로움 지수, 그리고 일기 ID를 받아 AI 처리를 요청하는 모델입니다.
+    일기 내용과 단조로움 지수를 받아 AI 처리를 요청하는 모델입니다.
     """
     content: str = Field(description="원본 일기 내용")
     monotony_score: int = Field(description="단조로움 지수")
-    original_diary_id: str = Field(description="원본 일기의 고유 식별자 (ID)")
-
+    
     model_config = {
         "json_schema_extra": {
             "examples": [
                 {
                     "content": "오늘은 팀 프로젝트 마감일이라 야근을 했고, 집 와서 바로 잠들었다. 일주일 내내 반복된 일상이라 지루하다.",
                     "monotony_score": 85,
-                    "original_diary_id": "diary-20251206-001"
                 }
             ]
         }
@@ -62,9 +60,8 @@ class RecommendItem(BaseModel):
 
 class IntegratedResponse(BaseModel):
     """
-    일상 추천 리스트와 평행일기 내용을 포함하는 최종 통합 응답 모델입니다.
+    일상 추천 리스트와 평행일기 내용을 포함하는 최종 통합 응답 모델입니다. (original_diary_id 제거)
     """
-    original_diary_id: str = Field(description="요청 시 받은 원본 일기의 고유 식별자 (ID)")
     parallel_content: str = Field(description="원본 일기 내용을 바탕으로 '~다' 형식으로 작성된 평행일기 본문")
     recommendations: List[RecommendItem] = Field(description="평행일기에서 추출된 대조적인 활동 리스트 (최대 4개)")
 
@@ -88,9 +85,8 @@ async def recommend_and_parallel(req: IntegratedRecommendRequest):
     diary_content = req.content
     monotony_score = req.monotony_score # 단조로움 지수 값 사용
     
-    # 두 가지 결과를 저장할 딕셔너리
+    # 두 가지 결과를 저장할 딕셔너리 (original_diary_id 제거)
     final_result = {
-        "original_diary_id": req.original_diary_id,
         "parallel_content": "",
         "recommendations": []
     }
@@ -100,7 +96,7 @@ async def recommend_and_parallel(req: IntegratedRecommendRequest):
     # -----------------------------------------------------
     if monotony_score >= 70:
         # 단조로움이 매우 높을 때 (예: 70% 이상)
-        score_guideline = "사용자의 단조로움 지수가 매우 높습니다. 평행일기에는 일상과 **비슷하면서도 적당히 다른** 활동을 포함해야 하며, 추천 항목도 이에 맞춰 **높은 변화**를 유도해야 한다."
+        score_guideline = "사용자의 단조로움 지수가 매우 높습니다. 평행일기에는 일상과 **비슷하면서 적당히 재밌는** 활동을 포함해야 하며, 추천 항목도 이에 맞춰 **높은 변화**를 유도해야 한다."
     elif monotony_score <= 30:
         # 단조로움이 매우 낮을 때 (예: 30% 이하)
         score_guideline = "사용자의 단조로움 지수가 낮습니다. 평행일기에는 이미 다양한 활동을 즐기고 있다는 점을 고려하여, **특정 취향을 깊게 파고들거나(마스터) 섬세한 차이**를 즐길 수 있는 활동을 대조적으로 포함해야 한다."
