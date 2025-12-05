@@ -68,6 +68,7 @@ def stream_response_generator(messages: List[Dict[str, str]]) -> Generator[str, 
     제공된 messages 리스트(대화 기록 포함)를 AI에 전달하고, 
     응답을 SSE 형식의 문자열로 스트리밍하는 제너레이터 함수입니다.
     """
+    print("hi")
     if client is None:
         raise Exception("API Client is not initialized.")
 
