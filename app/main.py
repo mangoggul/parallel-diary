@@ -9,7 +9,7 @@ from api.create_parallel_diary import create_parallel_diary
 from api.chatting import chat_history_router
 from api.recommendation import diary_recommend
 from api.Integrated_diary_create import recommend_and_parallel_diary
-from api.navigation import router as navigation_router
+from api.integrated_path import cctv_router, start_cctv_streams
 
 app = FastAPI()
 
@@ -30,7 +30,9 @@ app.add_middleware(
     allow_headers=["*"],            # 모든 HTTP 헤더 허용
 )
 
-
+@app.on_event("startup")
+async def startup_event():
+    start_cctv_streams()
 
 
 app.include_router(create_diary)
@@ -43,7 +45,7 @@ app.include_router(chat_history_router)
 app.include_router(diary_recommend)
 app.include_router(recommend_and_parallel_diary)
 
-app.include_router(navigation_router)
+app.include_router(cctv_router)
 
 @app.get("/")
 def read_root():
