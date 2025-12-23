@@ -98,8 +98,8 @@ async def get_escape_path(request: LocationRequest):
                     area = (box[2]-box[0]) * (box[3]-box[1])
                     if cls == 'fire': f_sum += area
                     elif cls == 'smoke': s_sum += area
-            res_data["fireLevel"] = round(min(f_sum / total_area, 1.0), 4)
-            res_data["smokeLevel"] = round(min(s_sum / total_area, 1.0), 4)
+            res_data["fireLevel"] = float(round(min(f_sum / total_area, 1.0), 4))
+            res_data["smokeLevel"] = float(round(min(s_sum / total_area, 1.0), 4))
 
         if w_res.boxes:
             for b in w_res.boxes:
@@ -158,7 +158,7 @@ async def get_escape_path(request: LocationRequest):
             "start": start_node,
             "destination": nearest_stair,
             "path": path[::-1],
-            "total_distance": round(distances[nearest_stair], 2),
+            "total_distance": float(round(distances[nearest_stair], 2)),
             "is_safe": distances[nearest_stair] < 999.0
         }
     }
