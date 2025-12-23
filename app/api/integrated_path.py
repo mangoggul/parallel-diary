@@ -167,7 +167,7 @@ def analyze_single_frame(zone_id, frame):
                     area = float((box[2]-box[0]) * (box[3]-box[1]))
                     if 'fire' in c_name: 
                         f_sum += area
-                    elif 'smoke' in c_name: 
+                    if 'smoke' in c_name: 
                         s_sum += area
             
             res_data["fireLevel"] = float(round(min(f_sum / total_area, 1.0), 4))
