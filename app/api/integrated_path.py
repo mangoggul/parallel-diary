@@ -27,42 +27,35 @@ BASE_FACILITY_GRAPH = {
 
 ZONE_MAP = {f"zone_{i+1:02d}": name for i, name in enumerate([
     "201호", "202호", "203호", "204호", "205호", "206호", "207호", "208호",
-    "209호", "210호", "211호", "복도1", "복도2", "복도3", "복도4", "복도5","복도6"
+    "209호", "210호", "211호", "복도1", "복도2", "복도3", "복도4", "복도5", "복도6"
 ])}
 
-# 사용되는 zone 수를 ZONE_MAP 기준으로 동적으로 설정 (17개로 자동 적용)
 N_ZONES = len(ZONE_MAP)
-
 VIDEO_SOURCES = [f"../video/video_{i}.mp4" for i in range(1, N_ZONES + 1)]
 TARGET_SIZE = 224 
 
-# 모델 로드 (전역변수)
 try:
     fire_model = YOLO("../best_openvino_model/", task='detect') 
     weapon_model = YOLO("../yolo_small_weights_openvino_model/", task='detect')
     print("✅ OpenVINO 모델 로드 성공")
-    USE_OPENVINO = True
 except Exception as e:
-    print(f"⚠️ OpenVINO 로드 실패: {e}")
     fire_model = YOLO("../best.pt", task='detect')
     weapon_model = YOLO("../yolo_small_weights.pt", task='detect')
-    print("⚠️ PyTorch (.pt) 모델 로드")
-    USE_OPENVINO = False
+    print(f"⚠️ PyTorch (.pt) 로드: {e}")
 
 latest_frames = {f"zone_{i+1:02d}": None for i in range(N_ZONES)}
 
-# --- 캐시 및 동기화 변수 추가 ---
 cache_lock = threading.Lock()
-cached_zone_results = None          # 최근 분석(프레임->zone 결과) 캐시
-cached_dynamic_graph = None         # 위험 반영된 그래프 캐시
+cached_zone_results = None
+cached_dynamic_graph = None
 cache_timestamp = 0.0
-cache_ttl = 10.0                    # 초 단위: 캐시 유효 시간
+cache_ttl = 10.0
 analysis_in_progress = False
 
 class LocationRequest(BaseModel):
     current_location: str
 
-# --- [2. 영상 스트리밍 스레드] ---
+# --- [2. 영상 스트리밍] ---
 def video_streamer(index, src):
     zone_id = f"zone_{index+1:02d}"
     cap = cv2.VideoCapture(src)
@@ -76,162 +69,108 @@ def video_streamer(index, src):
 
 def start_cctv_streams():
     for i, src in enumerate(VIDEO_SOURCES):
-        thread = threading.Thread(target=video_streamer, args=(i, src), daemon=True)
-        thread.start()
+        threading.Thread(target=video_streamer, args=(i, src), daemon=True).start()
 
-# --- 새로운 함수: 프레임 분석을 백그라운드에서 수행해 캐시 갱신 ---
-def _run_full_analysis_and_update_cache():
-    global cached_zone_results, cached_dynamic_graph, cache_timestamp, analysis_in_progress
-    try:
-        with cache_lock:
-            analysis_in_progress = True
-
-        # 스냅샷 프레임 복사
-        current_frames = latest_frames.copy()
-        zone_ids = [f"zone_{i+1:02d}" for i in range(N_ZONES)]
-
-        # 순차 분석 (기존 로직 재사용)
-        current_zone_results = []
-        dynamic_graph = {node: neighbors.copy() for node, neighbors in BASE_FACILITY_GRAPH.items()}
-
-        for zone_id in zone_ids:
-            frame = current_frames.get(zone_id)
-            if frame is None:
-                res_data = {
-                    "zoneId": ZONE_MAP.get(zone_id, zone_id),
-                    "fireLevel": 0.0,
-                    "smokeLevel": 0.0,
-                    "knife": False,
-                    "people_cnt": 0
-                }
-            else:
-                # 기존의 무거운 분석 함수 호출
-                res_data = analyze_single_frame(zone_id, frame)
-
-            current_zone_results.append(res_data)
-
-            # 위험 노드 무력화 (기존 로직)
-            if res_data["fireLevel"] > 0.1 or res_data["smokeLevel"] > 0.1 or res_data["knife"]:
-                danger_node = res_data["zoneId"]
-                if danger_node in dynamic_graph:
-                    for neighbor in list(dynamic_graph[danger_node].keys()):
-                        dynamic_graph[danger_node][neighbor] = 999.0
-                    for node in dynamic_graph:
-                        if danger_node in dynamic_graph[node]:
-                            dynamic_graph[node][danger_node] = 999.0
-
-        # 캐시 업데이트
-        with cache_lock:
-            cached_zone_results = current_zone_results
-            cached_dynamic_graph = dynamic_graph
-            cache_timestamp = time.time()
-    except Exception as e:
-        print(f"❌ 백그라운드 분석 실패: {e}")
-        traceback.print_exc()
-    finally:
-        with cache_lock:
-            analysis_in_progress = False
-
-# --- [3. 분석 함수 (개선됨)] ---
+# --- [3. 분석 함수: 대소문자 및 라벨 수정] ---
 def analyze_single_frame(zone_id, frame):
     real_name = ZONE_MAP.get(zone_id, zone_id)
-    res_data = {
-        "zoneId": real_name,
-        "fireLevel": 0.0, "smokeLevel": 0.0, "knife": False, "people_cnt": 0
-    }
+    res_data = {"zoneId": real_name, "fireLevel": 0.0, "smokeLevel": 0.0, "knife": False, "people_cnt": 0}
     total_area = float(TARGET_SIZE * TARGET_SIZE)
     
     try:
-        # 1. 화재 분석 (Fire, Smoke 대응)
         f_results = fire_model.predict(frame, imgsz=TARGET_SIZE, verbose=False, device='cpu', conf=0.15)
         if f_results and len(f_results) > 0:
-            f_res = f_results[0]
-            f_sum, s_sum = 0.0, 0.0
-            
+            f_res, f_sum, s_sum = f_results[0], 0.0, 0.0
             if f_res.boxes is not None:
                 for b in f_res.boxes:
-                    c_idx = int(b.cls.item())
-                    # 로그에 맞춰 소문자 변환
-                    c_name = str(fire_model.names[c_idx]).lower() 
-                    conf = float(b.conf.item())
-                    
+                    c_name = str(fire_model.names[int(b.cls.item())]).lower()
                     box = b.xyxy[0].cpu().numpy()
                     area = float((box[2]-box[0]) * (box[3]-box[1]))
-                    
-                    if 'fire' in c_name:
-                        f_sum += area
-                    if 'smoke' in c_name:
-                        s_sum += area
-            
+                    if 'fire' in c_name: f_sum += area
+                    if 'smoke' in c_name: s_sum += area
             res_data["fireLevel"] = float(round(min(f_sum / total_area, 1.0), 4))
             res_data["smokeLevel"] = float(round(min(s_sum / total_area, 1.0), 4))
 
-        # 2. 폭력/무기 분석 (non_violence, violence 대응)
         w_results = weapon_model.predict(frame, imgsz=TARGET_SIZE, verbose=False, device='cpu', conf=0.2)
         if w_results and len(w_results) > 0:
             w_res = w_results[0]
             if w_res.boxes is not None:
                 for b in w_res.boxes:
                     c_idx = int(b.cls.item())
-                    # 디버그 로그 기반: 0=non_violence(사람), 1=violence(위험)
-                    if c_idx == 0: 
-                        res_data["people_cnt"] += 1
-                    elif c_idx == 1: 
-                        # violence가 감지되면 knife와 동일하게 위험으로 처리
-                        res_data["knife"] = True
-                        
+                    if c_idx == 0: res_data["people_cnt"] += 1
+                    elif c_idx == 1: res_data["knife"] = True # violence 라벨 대응
     except Exception as e:
         print(f"❌ {real_name} 분석 에러: {e}")
-
     return res_data
 
-# --- [4. 경로 탐색 API] ---
+# --- [4. 백그라운드 분석 로직] ---
+def _run_full_analysis_and_update_cache():
+    global cached_zone_results, cached_dynamic_graph, cache_timestamp, analysis_in_progress
+    try:
+        with cache_lock: analysis_in_progress = True
+        current_frames = latest_frames.copy()
+        current_zone_results = []
+        dynamic_graph = {node: neighbors.copy() for node, neighbors in BASE_FACILITY_GRAPH.items()}
+
+        for i in range(N_ZONES):
+            zone_id = f"zone_{i+1:02d}"
+            frame = current_frames.get(zone_id)
+            res = analyze_single_frame(zone_id, frame) if frame is not None else \
+                  {"zoneId": ZONE_MAP[zone_id], "fireLevel": 0.0, "smokeLevel": 0.0, "knife": False, "people_cnt": 0}
+            current_zone_results.append(res)
+
+            if res["fireLevel"] > 0.1 or res["smokeLevel"] > 0.1 or res["knife"]:
+                d_node = res["zoneId"]
+                if d_node in dynamic_graph:
+                    for neighbor in list(dynamic_graph[d_node].keys()): dynamic_graph[d_node][neighbor] = 999.0
+                    for node in dynamic_graph:
+                        if d_node in dynamic_graph[node]: dynamic_graph[node][d_node] = 999.0
+
+        with cache_lock:
+            cached_zone_results = current_zone_results
+            cached_dynamic_graph = dynamic_graph
+            cache_timestamp = time.time()
+    finally:
+        with cache_lock: analysis_in_progress = False
+
+# --- [5. 경로 탐색 API (Response Model 유지 + 사용자 구제 추가)] ---
 @cctv_router.post("/get-escape-path")
 async def get_escape_path(request: LocationRequest):
     start_time = time.time()
-
     try:
-        # 요청 시점에 캐시가 유효한지 확인
         now = time.time()
         with cache_lock:
             cache_age = now - cache_timestamp if cache_timestamp else None
             cache_valid = (cached_zone_results is not None) and (cache_age is not None and cache_age <= cache_ttl)
             currently_running = analysis_in_progress
 
-        # 캐시가 없고 분석이 진행중이 아니면 백그라운드로 분석 시작
         if not cache_valid and not currently_running:
-            thread = threading.Thread(target=_run_full_analysis_and_update_cache, daemon=True)
-            thread.start()
-            with cache_lock:
-                currently_running = True  # 즉시 표시
+            threading.Thread(target=_run_full_analysis_and_update_cache, daemon=True).start()
+            with cache_lock: currently_running = True
 
-        # 만약 캐시가 아직 없고 분석 중이면 빠르게 대기 상태 응답(프론트가 1초마다 요청하면 이후 캐시가 채워지면 결과를 받음)
         with cache_lock:
             local_zone_results = cached_zone_results
             local_dynamic_graph = cached_dynamic_graph
 
         if local_zone_results is None:
-            # 초기 분석이 아직 끝나지 않았고 반환할 이전 결과도 없을 때
             return {
                 "analysis": [],
-                "escape_path": {
-                    "start": request.current_location,
-                    "destination": "처리중",
-                    "path": [],
-                    "total_distance": 999.0,
-                    "is_safe": False
-                },
-                "processing_time": round(time.time() - start_time, 2),
-                "status": "processing"
+                "escape_path": {"start": request.current_location, "destination": "처리중", "path": [], "total_distance": 999.0, "is_safe": False},
+                "processing_time": round(time.time() - start_time, 2), "status": "processing"
             }
 
-        # 캐시는 존재 -> 빠르게 Dijkstra로 경로만 계산하여 반환 (이 부분은 가벼움)
-        dynamic_graph = local_dynamic_graph.copy()
+        # --- 사용자 위치 구제 로직 ---
         start_node = request.current_location
-        if start_node not in dynamic_graph:
-            raise HTTPException(status_code=404, detail=f"위치를 찾을 수 없습니다: {start_node}")
+        # 원본 캐시 그래프를 복사하여 사용 (start_node의 간선만 임시 복구)
+        dynamic_graph = {node: neighbors.copy() for node, neighbors in local_dynamic_graph.items()}
+        
+        if start_node in dynamic_graph:
+            for neighbor in dynamic_graph[start_node]:
+                if dynamic_graph[start_node][neighbor] >= 999.0:
+                    # 원본 거리 데이터에서 가져와서 길을 열어줌
+                    dynamic_graph[start_node][neighbor] = BASE_FACILITY_GRAPH[start_node].get(neighbor, 1.0)
 
-        # 다익스트라 (요청당 가볍게 실행)
+        # 다익스트라
         stairs = ['계단1', '계단2', '계단3', '계단4']
         distances = {node: float('inf') for node in dynamic_graph}
         predecessors = {node: None for node in dynamic_graph}
@@ -240,31 +179,24 @@ async def get_escape_path(request: LocationRequest):
 
         while pq:
             d, curr = heapq.heappop(pq)
-            if d > distances[curr]:
-                continue
-            for neighbor, weight in dynamic_graph[curr].items():
+            if d > distances.get(curr, float('inf')): continue
+            for neighbor, weight in dynamic_graph.get(curr, {}).items():
                 if d + weight < distances[neighbor]:
                     distances[neighbor] = d + weight
                     predecessors[neighbor] = curr
                     heapq.heappush(pq, (distances[neighbor], neighbor))
 
-        reachable_stairs = [s for s in stairs if distances.get(s, float('inf')) < 999.0]
+        reachable_stairs = [s for s in stairs if distances.get(s, float('inf')) < 900.0]
 
         if reachable_stairs:
             nearest_stair = min(reachable_stairs, key=lambda s: distances[s])
-            path = []
-            curr = nearest_stair
+            path, curr = [], nearest_stair
             while curr is not None:
-                path.append(curr)
-                curr = predecessors[curr]
-            final_path = path[::-1]
-            dist = float(round(distances[nearest_stair], 2))
+                path.append(curr); curr = predecessors[curr]
+            final_path, dist = path[::-1], float(round(distances[nearest_stair], 2))
         else:
-            nearest_stair = "탈출 불가"
-            final_path = [start_node]
-            dist = 999.0
+            nearest_stair, final_path, dist = "탈출 불가", [start_node], 999.0
 
-        elapsed_time = time.time() - start_time
         return {
             "analysis": local_zone_results,
             "escape_path": {
@@ -272,16 +204,12 @@ async def get_escape_path(request: LocationRequest):
                 "destination": nearest_stair,
                 "path": final_path,
                 "total_distance": dist,
-                "is_safe": bool(dist < 999.0)
+                "is_safe": bool(dist < 900.0)
             },
-            "processing_time": round(elapsed_time, 2),
+            "processing_time": round(time.time() - start_time, 2),
             "status": "ok",
             "cache_age": round(now - cache_timestamp, 2)
         }
-
-    except HTTPException:
-        raise
     except Exception as e:
-        print(f"❌ 치명적 에러: {e}")
         traceback.print_exc()
-        raise HTTPException(status_code=500, detail=f"서버 에러: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
