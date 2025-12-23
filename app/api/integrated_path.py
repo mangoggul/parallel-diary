@@ -134,72 +134,54 @@ def _run_full_analysis_and_update_cache():
 
 # --- [3. 분석 함수 (개선됨)] ---
 def analyze_single_frame(zone_id, frame):
-    """단일 프레임 분석 - 에러 처리 강화"""
+    real_name = ZONE_MAP.get(zone_id, zone_id)
     res_data = {
-        "zoneId": ZONE_MAP.get(zone_id, zone_id),
-        "fireLevel": 0.0, 
-        "smokeLevel": 0.0, 
-        "knife": False, 
-        "people_cnt": 0
+        "zoneId": real_name,
+        "fireLevel": 0.0, "smokeLevel": 0.0, "knife": False, "people_cnt": 0
     }
-    
     total_area = float(TARGET_SIZE * TARGET_SIZE)
     
     try:
-        # 화재 분석
-        f_res = fire_model.predict(
-            frame, 
-            imgsz=TARGET_SIZE, 
-            verbose=False, 
-            device='cpu',
-            conf=0.25
-        )[0]
-        
-        if f_res.boxes is not None and len(f_res.boxes) > 0:
+        # 1. 화재 분석 (Fire, Smoke 대응)
+        f_results = fire_model.predict(frame, imgsz=TARGET_SIZE, verbose=False, device='cpu', conf=0.15)
+        if f_results and len(f_results) > 0:
+            f_res = f_results[0]
             f_sum, s_sum = 0.0, 0.0
-            for b in f_res.boxes:
-                c_idx = int(b.cls.item())
-                c_name = fire_model.names[c_idx].lower()
-                conf = float(b.conf.item())
-                
-                if conf >= 0.25:
+            
+            if f_res.boxes is not None:
+                for b in f_res.boxes:
+                    c_idx = int(b.cls.item())
+                    # 로그에 맞춰 소문자 변환
+                    c_name = str(fire_model.names[c_idx]).lower() 
+                    conf = float(b.conf.item())
+                    
                     box = b.xyxy[0].cpu().numpy()
                     area = float((box[2]-box[0]) * (box[3]-box[1]))
-                    if 'fire' in c_name: 
+                    
+                    if 'fire' in c_name:
                         f_sum += area
-                    if 'smoke' in c_name: 
+                    if 'smoke' in c_name:
                         s_sum += area
             
             res_data["fireLevel"] = float(round(min(f_sum / total_area, 1.0), 4))
             res_data["smokeLevel"] = float(round(min(s_sum / total_area, 1.0), 4))
 
+        # 2. 폭력/무기 분석 (non_violence, violence 대응)
+        w_results = weapon_model.predict(frame, imgsz=TARGET_SIZE, verbose=False, device='cpu', conf=0.2)
+        if w_results and len(w_results) > 0:
+            w_res = w_results[0]
+            if w_res.boxes is not None:
+                for b in w_res.boxes:
+                    c_idx = int(b.cls.item())
+                    # 디버그 로그 기반: 0=non_violence(사람), 1=violence(위험)
+                    if c_idx == 0: 
+                        res_data["people_cnt"] += 1
+                    elif c_idx == 1: 
+                        # violence가 감지되면 knife와 동일하게 위험으로 처리
+                        res_data["knife"] = True
+                        
     except Exception as e:
-        print(f"⚠️ {zone_id} 화재 분석 에러: {e}")
-        traceback.print_exc()
-
-    try:
-        # 무기 분석
-        w_res = weapon_model.predict(
-            frame, 
-            imgsz=TARGET_SIZE, 
-            verbose=False, 
-            device='cpu',
-            conf=0.2
-        )[0]
-        
-        if w_res.boxes is not None and len(w_res.boxes) > 0:
-            for b in w_res.boxes:
-                c_idx = int(b.cls.item())
-                conf = float(b.conf.item())
-                
-                if c_idx == 0 and conf >= 0.2:  # person
-                    res_data["people_cnt"] += 1
-                elif c_idx == 43 and conf >= 0.2:  # knife
-                    res_data["knife"] = True
-                    
-    except Exception as e:
-        print(f"⚠️ {zone_id} 무기 분석 에러: {e}")
-        traceback.print_exc()
+        print(f"❌ {real_name} 분석 에러: {e}")
 
     return res_data
 
