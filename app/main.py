@@ -17,6 +17,7 @@ origins = [
     # Vercel 배포 주소 (HTTPS 사용)
     "https://parallel-diary-frontend.vercel.app",
     "http://3.105.9.139:3000",
+    "https://dappy-sw-ai-hack.vercel.app/"
     # 로컬 개발 환경 주소 (HTTP 사용)
     "http://localhost:3000",
     "http://localhost:5173",
